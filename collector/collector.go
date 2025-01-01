@@ -7,30 +7,27 @@ import (
 	"time"
 )
 
-type metric interface {
+type Metric interface {
 	Collect(*sql.DB, <-chan struct{}) error
 	Name() string
 	SetValue(string)
 	GetValue() string
 }
 
-var _ metric = &openConnections{}
-var _ metric = &slowQueries{}
+var _ Metric = &OpenConnections{}
+var _ Metric = &SlowQueries{}
 
 type Collector struct {
-	metrics  []metric
+	metrics  []Metric
 	dbCon    *sql.DB
 	stopChan chan struct{}
 }
 
-func NewCollector(db *sql.DB) *Collector {
+func NewCollector(db *sql.DB, metrics []Metric, stopChan chan struct{}) *Collector {
 	return &Collector{
-		metrics: []metric{
-			&openConnections{},
-			&slowQueries{},
-		},
+		metrics:  metrics,
 		dbCon:    db,
-		stopChan: make(chan struct{}),
+		stopChan: stopChan,
 	}
 }
 
@@ -38,7 +35,7 @@ func (c *Collector) StartCollecting() {
 	var wg sync.WaitGroup
 	for _, m := range c.metrics {
 		wg.Add(1)
-		go func(m metric) {
+		go func(m Metric) {
 			defer wg.Done()
 			m.Collect(c.dbCon, c.stopChan)
 		}(m)
@@ -47,16 +44,16 @@ func (c *Collector) StartCollecting() {
 	wg.Wait()
 }
 
-type openConnections struct {
+type OpenConnections struct {
 	mu          sync.Mutex
 	connections string
 }
 
-func (o *openConnections) Name() string {
+func (o *OpenConnections) Name() string {
 	return "Open Connections"
 }
 
-func (o *openConnections) Collect(db *sql.DB, stopChan <-chan struct{}) error {
+func (o *OpenConnections) Collect(db *sql.DB, stopChan <-chan struct{}) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -64,41 +61,40 @@ func (o *openConnections) Collect(db *sql.DB, stopChan <-chan struct{}) error {
 	for {
 		select {
 		case <-stopChan:
-			fmt.Println("stopping connections collection...")
+			fmt.Println("Stopping connections collection...")
 			return nil
 		case <-ticker.C:
 			err := db.QueryRow("SHOW STATUS LIKE 'threads_connected'").Scan(new(string), &openCons)
 			if err != nil {
 				return fmt.Errorf("failed to get threads connected count: %v", err)
 			}
-			fmt.Printf("threads currently connected: %v\n", openCons)
 			o.SetValue(fmt.Sprintf("%v", openCons))
 		}
 	}
 }
 
-func (o *openConnections) GetValue() string {
+func (o *OpenConnections) GetValue() string {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	return o.connections
 }
 
-func (o *openConnections) SetValue(connections string) {
+func (o *OpenConnections) SetValue(connections string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.connections = connections
 }
 
-type slowQueries struct {
+type SlowQueries struct {
 	mu          sync.Mutex
 	slowQueries string
 }
 
-func (s *slowQueries) Name() string {
+func (s *SlowQueries) Name() string {
 	return "Slow Queries"
 }
 
-func (s *slowQueries) Collect(db *sql.DB, stopChan <-chan struct{}) error {
+func (s *SlowQueries) Collect(db *sql.DB, stopChan <-chan struct{}) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -106,25 +102,25 @@ func (s *slowQueries) Collect(db *sql.DB, stopChan <-chan struct{}) error {
 	for {
 		select {
 		case <-stopChan:
-			fmt.Println("stopping slow queries collection...")
+			fmt.Println("Stopping slow queries collection...")
 			return nil
 		case <-ticker.C:
 			err := db.QueryRow("show global status like 'slow_queries'").Scan(new(string), &slowQueries)
 			if err != nil {
 				return fmt.Errorf("failed to get slow queries: %v", err)
 			}
-			fmt.Printf("slow queries: %v\n", slowQueries)
+			s.SetValue(fmt.Sprintf("%v", slowQueries))
 		}
 	}
 }
 
-func (s *slowQueries) GetValue() string {
+func (s *SlowQueries) GetValue() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.slowQueries
 }
 
-func (s *slowQueries) SetValue(slowQueries string) {
+func (s *SlowQueries) SetValue(slowQueries string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.slowQueries = slowQueries

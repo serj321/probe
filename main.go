@@ -6,7 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"probe/collector"
+	"probe/displayer"
+	"sync"
+	"syscall"
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -36,9 +40,36 @@ func main() {
 	}
 	defer db.Close()
 
-	collector := collector.NewCollector(db)
+	metrics := []collector.Metric{
+		&collector.OpenConnections{},
+		&collector.SlowQueries{},
+	}
 
-	collector.StartCollecting()
+	stopChan := make(chan struct{})
+	collector := collector.NewCollector(db, metrics, stopChan)
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		collector.StartCollecting()
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		displayer.StartDisplaying(metrics, stopChan)
+	}()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	<-signalChan
+
+	fmt.Println("Shutting down gracefully...")
+	close(stopChan)
+
+	wg.Wait()
 }
 
 func createConnectionPool(dsn string, maxOpenConns, maxIdleConns int, connMaxLifetime time.Duration) (*sql.DB, error) {
